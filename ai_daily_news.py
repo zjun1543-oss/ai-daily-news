@@ -215,7 +215,7 @@ class WxPusherClient:
     def __init__(self, token: str, uid: str):
         self.token = token
         self.uid = uid
-        self.api_url = "https://wxpusher.zjiecode.com/api/send"
+        self.api_url = "https://wxpusher.zjiecode.com/api/send/message"
 
     def send(self, content: str) -> bool:
         """发送消息到微信"""
