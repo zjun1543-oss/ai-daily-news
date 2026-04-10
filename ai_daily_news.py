@@ -1,15 +1,16 @@
 #!/usr/bin/env python3
 """
-AI 每日资讯推送
-每天早上6点自动抓取 AI 前沿资讯，筛选 5-10 条最重要的推送到微信
+AI 每日内参
+每天早上6点自动抓取 AI 前沿资讯，生成内参风格的深度分析报告
 """
 
 import os
 import feedparser
 import requests
-from datetime import datetime, timedelta
+from datetime import datetime, timedelta, date
 from typing import List, Dict, Optional
 import re
+import json
 from zhipuai import ZhipuAI
 
 # ============== 配置 ==============
@@ -30,8 +31,11 @@ RSS_SOURCES = {
     "MIT AI": "https://www.technologyreview.com/topnews.rss?section=artificial-intelligence",
 }
 
+# 关注的行业
+FOCUS_INDUSTRIES = ["教育", "创意设计", "心理学"]
+
 # 推送配置
-MAX_ARTICLES = 10  # 最多推送几条
+MAX_ARTICLES = 5  # 每天分析 5 条重大新闻
 TIMEZONE = "Asia/Shanghai"
 
 
@@ -41,7 +45,7 @@ class NewsFetcher:
     def __init__(self):
         self.entries = []
 
-    def fetch_from_rss(self) -> List[Dict]:
+    def fetch_from_rss(self, days_back: int = 2) -> List[Dict]:
         """从所有 RSS 源抓取资讯"""
         all_entries = []
         seen_urls = set()
@@ -51,7 +55,7 @@ class NewsFetcher:
                 print(f"正在抓取 {source_name}...")
                 feed = feedparser.parse(rss_url)
 
-                for entry in feed.entries[:10]:  # 每个源取最新10条
+                for entry in feed.entries[:15]:
                     url = entry.get('link', '')
 
                     # 去重
@@ -63,8 +67,8 @@ class NewsFetcher:
                     published = entry.get('published_parsed')
                     if published:
                         pub_date = datetime(*published[:6])
-                        # 只取最近 48 小时的资讯
-                        if datetime.now() - pub_date > timedelta(hours=48):
+                        # 只取最近 N 天的资讯
+                        if datetime.now() - pub_date > timedelta(days=days_back):
                             continue
 
                     all_entries.append({
@@ -84,47 +88,122 @@ class NewsFetcher:
         return all_entries
 
 
-class NewsSelector:
-    """资讯筛选器 - 使用 AI 筛选最重要的资讯"""
+class NewsAnalyzer:
+    """AI 资讯深度分析器"""
 
     def __init__(self, api_key: str):
         self.client = ZhipuAI(api_key=api_key)
 
-    def select_articles(self, articles: List[Dict]) -> List[Dict]:
-        """使用 AI 筛选出最重要、最前沿的资讯"""
+    def analyze_news(self, article: Dict) -> Dict:
+        """对单条新闻进行深度分析"""
+        title = article['title']
+        summary = article.get('summary', '')[:800]
+        source = article['source']
+        url = article['url']
+
+        prompt = f"""你是一位资深 AI 行业分析师，负责撰写 AI 领域的内参报告。请对以下新闻进行深度分析。
+
+【新闻标题】
+{title}
+
+【新闻来源】
+{source}
+
+【新闻内容】
+{summary}
+
+【新闻链接】
+{url}
+
+请从以下维度进行分析，输出格式严格按要求：
+
+一、新闻阐述
+用200-300字客观阐述这条新闻的核心内容、技术细节和关键信息。
+
+二、深度思考
+从以下三个行业视角进行分析，每个行业100-150字：
+1. 教育：这对教育领域意味着什么？教学方式、学习体验会有什么变化？
+2. 创意设计：这对创意设计行业有什么影响？设计师的工作方式会如何改变？
+3. 心理学：从心理学角度，这对人的认知、情感、社交行为有什么深层影响？
+
+三、底层逻辑串联
+分析这条新闻与 AI 发展的底层逻辑关系，以及它代表的行业趋势方向（100-150字）。
+
+请按照上述格式输出，不要添加其他内容。注意保持正式、专业的内参风格。"""
+
+        try:
+            print(f"  正在分析: {title[:30]}...")
+            response = self.client.chat.completions.create(
+                model="glm-4-flash",
+                messages=[
+                    {"role": "system", "content": "你是一位资深 AI 行业分析师，擅长撰写深度内参报告。你的分析专业、深入、具有前瞻性。"},
+                    {"role": "user", "content": prompt}
+                ],
+                temperature=0.5,
+            )
+
+            result = response.choices[0].message.content.strip()
+
+            return {
+                'title': title,
+                'source': source,
+                'url': url,
+                'summary': summary,
+                'analysis': result
+            }
+
+        except Exception as e:
+            print(f"  ✗ 分析失败: {e}")
+            return {
+                'title': title,
+                'source': source,
+                'url': url,
+                'summary': summary,
+                'analysis': f"[分析失败: {str(e)}]"
+            }
+
+
+class NewsSelector:
+    """重大新闻筛选器"""
+
+    def __init__(self, api_key: str):
+        self.client = ZhipuAI(api_key=api_key)
+
+    def select_major_news(self, articles: List[Dict]) -> List[Dict]:
+        """筛选出最重要的重大新闻"""
         if not articles:
             return []
 
-        print("\n使用 AI 筛选资讯...")
+        print("\n筛选重大新闻...")
 
         # 准备输入
         articles_text = "\n".join([
-            f"{i+1}. [{a['source']}] {a['title']}\n   摘要: {a['summary'][:200]}..."
-            for i, a in enumerate(articles[:30])
+            f"{i+1}. [{a['source']}] {a['title']}\n   {a['summary'][:150]}..."
+            for i, a in enumerate(articles[:40])
         ])
 
-        prompt = f"""你是一个 AI 资讯编辑。请从以下资讯中筛选出 {MAX_ARTICLES} 条**最重要、最前沿**的 AI 资讯。
+        prompt = f"""你是一位 AI 行业主编。请从以下资讯中筛选出 {MAX_ARTICLES} 条**最重要的重大新闻**。
 
-筛选标准：
-1. 重大技术突破、模型发布、产品更新
-2. 来自顶级公司（OpenAI、Google、Microsoft、Meta、Anthropic 等）
-3. 具有行业影响力
-4. 不选普通的教程、课程推广等
+筛选标准（优先级从高到低）：
+1. 重大技术突破（新模型发布、能力大幅提升）
+2. 行业里程碑事件（重要收购、战略合作、产品发布）
+3. 政策法规重大变化
+4. 对教育、创意设计、心理学有深远影响的事件
 
-请将资讯分类到：
-- 📈 前沿动态（技术突破、模型发布）
-- 🎓 AI 教育（课程、资源、学习材料）
-- 🎨 AI 设计（设计工具、创意应用）
+排除标准：
+- 普通的产品更新
+- 课程推广、活动宣传
+- 琐碎的功能改进
 
 资讯列表：
 {articles_text}
 
 请以 JSON 格式输出，包含 selected 数组，每个元素有：
 - index: 原资讯序号（从1开始）
-- category: 分类（前沿动态/AI教育/AI设计）
+- reason: 选择理由（20字以内）
 
 输出格式：
-{{"selected": [{{"index": 1, "category": "前沿动态"}}, ...]}}
+{{"selected": [{{"index": 1, "reason": "GPT-5发布意义重大"}}, ...]}}
 
 只输出 JSON，不要其他内容。"""
 
@@ -132,7 +211,7 @@ class NewsSelector:
             response = self.client.chat.completions.create(
                 model="glm-4-flash",
                 messages=[
-                    {"role": "system", "content": "你是一个专业的 AI 资讯编辑，擅长筛选和分类科技新闻。"},
+                    {"role": "system", "content": "你是一位经验丰富的科技新闻主编。"},
                     {"role": "user", "content": prompt}
                 ],
                 temperature=0.3,
@@ -144,9 +223,8 @@ class NewsSelector:
             result = re.sub(r'```json\s*', '', result)
             result = re.sub(r'```\s*', '', result)
 
-            print(f"AI 响应: {result[:200]}...")
+            print(f"筛选结果: {result[:200]}...")
 
-            import json
             selection = json.loads(result)
 
             # 根据筛选结果重新组织资讯
@@ -154,59 +232,82 @@ class NewsSelector:
             for item in selection.get('selected', []):
                 idx = item['index'] - 1
                 if 0 <= idx < len(articles):
-                    articles[idx]['category'] = item['category']
+                    articles[idx]['reason'] = item.get('reason', '')
                     selected_articles.append(articles[idx])
 
-            print(f"✓ AI 筛选出 {len(selected_articles)} 条资讯")
+            print(f"✓ 筛选出 {len(selected_articles)} 条重大新闻")
+            for i, art in enumerate(selected_articles, 1):
+                print(f"  {i}. {art['title'][:40]}... ({art.get('reason', '')})")
+
             return selected_articles
 
         except Exception as e:
-            print(f"✗ AI 筛选失败: {e}")
+            print(f"✗ 筛选失败: {e}")
             # 失败时返回前几条
             return articles[:MAX_ARTICLES]
 
 
-class NewsTranslator:
-    """资讯翻译器 - 将资讯翻译成中文"""
+class IndustryConnector:
+    """行业底层逻辑串联分析器"""
 
     def __init__(self, api_key: str):
         self.client = ZhipuAI(api_key=api_key)
 
-    def translate_summary(self, article: Dict) -> str:
-        """翻译并生成中文摘要"""
-        title = article['title']
-        summary = article['summary'][:500]
+    def connect_industries(self, analyzed_news: List[Dict]) -> str:
+        """分析多条新闻之间的底层逻辑串联"""
+        if not analyzed_news:
+            return ""
 
-        prompt = f"""请将以下资讯翻译成中文，并生成一句话摘要。
+        print("\n分析行业底层逻辑串联...")
 
-标题: {title}
+        # 准备输入
+        news_summary = "\n".join([
+            f"{i+1}. {n['title']}\n   来源: {n['source']}"
+            for i, n in enumerate(analyzed_news)
+        ])
 
-内容: {summary}
+        prompt = f"""你是一位具有跨行业视野的 AI 战略分析师。请分析以下 {len(analyzed_news)} 条重大新闻之间的底层逻辑关联。
 
-要求：
-1. 标题翻译准确
-2. 生成 30-50 字的中文摘要
-3. 输出格式：
-   标题：[中文标题]
-   摘要：[中文摘要]
+【今日重大新闻】
+{news_summary}
 
-只输出标题和摘要，不要其他内容。"""
+【关注行业】
+教育、创意设计、心理学
+
+请从以下角度分析，输出格式严格按要求：
+
+一、宏观趋势
+这批新闻整体反映了 AI 发展的什么宏观趋势？（150字以内）
+
+二、行业联动
+这批新闻在教育、创意设计、心理学三个行业之间有什么联动关系？
+- 技术→教育→设计的传导路径
+- 心理学视角的深层影响
+（200字以内）
+
+三、前瞻洞察
+基于这些新闻，预测未来 3-6 个月可能出现的行业变化。（150字以内）
+
+请按照上述格式输出，保持正式、专业的内参风格。"""
 
         try:
             response = self.client.chat.completions.create(
                 model="glm-4-flash",
                 messages=[
-                    {"role": "system", "content": "你是一个专业的科技翻译。"},
+                    {"role": "system", "content": "你是一位具有跨行业视野的 AI 战略分析师，擅长发现行业间的深层关联。"},
                     {"role": "user", "content": prompt}
                 ],
-                temperature=0.3,
+                temperature=0.6,
             )
 
-            return response.choices[0].message.content.strip()
+            result = response.choices[0].message.content.strip()
+            print("✓ 行业串联分析完成")
+
+            return result
 
         except Exception as e:
-            print(f"翻译失败: {e}")
-            return f"标题：{title}\n摘要：{summary[:100]}..."
+            print(f"✗ 行业串联分析失败: {e}")
+            return ""
 
 
 class WxPusherClient:
@@ -222,14 +323,14 @@ class WxPusherClient:
         payload = {
             "appToken": self.token,
             "content": content,
-            "summary": f"AI每日资讯 {datetime.now().strftime('%Y-%m-%d')}",
+            "summary": f"AI内参 {datetime.now().strftime('%Y-%m-%d')}",
             "contentType": 3,  # 3 表示 Markdown
             "uids": [self.uid],
             "url": ""
         }
 
         try:
-            response = requests.post(self.api_url, json=payload, timeout=30)
+            response = requests.post(self.api_url, json=payload, timeout=60)
             result = response.json()
 
             if result.get('success'):
@@ -244,56 +345,67 @@ class WxPusherClient:
             return False
 
 
-def format_message(articles: List[Dict]) -> str:
-    """格式化推送消息"""
-    date_str = datetime.now().strftime('%Y年%m月%d日')
-    weekday = ['一', '二', '三', '四', '五', '六', '日'][datetime.now().weekday()]
+def format_message(analyzed_news: List[Dict], industry_connection: str) -> str:
+    """格式化内参风格推送消息"""
+    today = date.today()
+    year = today.year
+    month = today.month
+    day = today.day
+    weekday = ['一', '二', '三', '四', '五', '六', '日'][today.weekday()]
 
-    message = f"""# 📅 {date_str} 星期{weekday} AI 资讯
+    message = f"""# AI 每日内参
+
+**{year}年{month}月{day}日 星期{weekday}**
 
 ---
 
+## 一、今日要闻概览
+
 """
 
-    # 按分类整理
-    categories = {
-        '前沿动态': [],
-        'AI教育': [],
-        'AI设计': []
-    }
+    # 概览
+    for i, news in enumerate(analyzed_news, 1):
+        message += f"{i}. **{news['title']}**\n   来源：{news['source']}\n\n"
 
-    for article in articles:
-        cat = article.get('category', '前沿动态')
-        if cat not in categories:
-            cat = '前沿动态'
-        categories[cat].append(article)
+    message += "## 二、深度分析\n\n"
 
-    # 输出各分类
-    icons = {'前沿动态': '📈', 'AI教育': '🎓', 'AI设计': '🎨'}
+    # 深度分析
+    for i, news in enumerate(analyzed_news, 1):
+        message += f"### {i}. {news['title']}\n\n"
+        message += f"**来源**：{news['source']}\n\n"
+        message += f"**链接**：[查看原文]({news['url']})\n\n"
 
-    for cat, icon in icons.items():
-        if categories[cat]:
-            message += f"\n## {icon} {cat}\n\n"
-            for article in categories[cat]:
-                # 如果有翻译结果用翻译，否则用原文
-                if 'translated' in article:
-                    message += f"**{article['translated']}**\n\n"
-                else:
-                    message += f"**{article['title']}**\n\n"
-                message += f"[查看原文]({article['url']})\n\n"
-                message += f"来源：{article['source']}\n\n"
-                message += "---\n\n"
+        # 添加分析内容
+        analysis = news.get('analysis', '')
+        if analysis:
+            # 清理分析内容中的 markdown 标题符号冲突
+            analysis = analysis.replace('###', '####').replace('##', '###')
+            message += f"{analysis}\n\n"
 
-    message += f"\n*由 AI 每日资讯自动生成*"
+        message += "---\n\n"
+
+    # 行业串联
+    if industry_connection:
+        message += "## 三、行业底层逻辑串联\n\n"
+        connection = industry_connection.replace('###', '####').replace('##', '###')
+        message += f"{connection}\n\n"
+
+    message += f"""
+---
+
+*本内参由 AI 自动生成，内容仅供参考*
+
+*生成时间：{datetime.now().strftime('%Y-%m-%d %H:%M:%S')}*
+"""
 
     return message
 
 
 def main():
     """主函数"""
-    print("=" * 50)
-    print("AI 每日资讯推送")
-    print("=" * 50)
+    print("=" * 60)
+    print("AI 每日内参生成器")
+    print("=" * 60)
 
     # 检查环境变量
     if not all([WXPUSHER_TOKEN, WXPUSHER_UID, ZHIPU_API_KEY]):
@@ -301,38 +413,45 @@ def main():
         return
 
     try:
-        # 1. 抓取资讯
+        # 1. 抓取资讯（取前3天的新闻）
         fetcher = NewsFetcher()
-        articles = fetcher.fetch_from_rss()
+        articles = fetcher.fetch_from_rss(days_back=3)
 
         if not articles:
             print("没有抓取到资讯")
             return
 
-        # 2. AI 筛选
+        # 2. 筛选重大新闻
         selector = NewsSelector(ZHIPU_API_KEY)
-        selected = selector.select_articles(articles)
+        major_news = selector.select_major_news(articles)
 
-        if not selected:
-            print("没有筛选出资讯")
+        if not major_news:
+            print("没有筛选出重大新闻")
             return
 
-        # 3. 翻译摘要（可选，为了节省 API 调用可以跳过）
-        print("\n翻译资讯摘要...")
-        translator = NewsTranslator(ZHIPU_API_KEY)
-        for article in selected:
-            translated = translator.translate_summary(article)
-            article['translated'] = translated
+        # 3. 深度分析每条新闻
+        print("\n开始深度分析...")
+        analyzer = NewsAnalyzer(ZHIPU_API_KEY)
+        analyzed_news = []
 
-        # 4. 格式化消息
-        message = format_message(selected)
-        print("\n" + "=" * 50)
-        print("推送内容预览：")
-        print("=" * 50)
+        for news in major_news:
+            analyzed = analyzer.analyze_news(news)
+            analyzed_news.append(analyzed)
+
+        # 4. 分析行业底层逻辑串联
+        connector = IndustryConnector(ZHIPU_API_KEY)
+        industry_connection = connector.connect_industries(analyzed_news)
+
+        # 5. 格式化消息
+        message = format_message(analyzed_news, industry_connection)
+
+        print("\n" + "=" * 60)
+        print("内参预览（前500字）：")
+        print("=" * 60)
         print(message[:500] + "...")
-        print("=" * 50)
+        print("=" * 60)
 
-        # 5. 推送到微信
+        # 6. 推送到微信
         print("\n开始推送...")
         wxpusher = WxPusherClient(WXPUSHER_TOKEN, WXPUSHER_UID)
         wxpusher.send(message)
